@@ -1,4 +1,0 @@
-library(usethis)
-use_git()
-git_use()
-edit_git_config()
