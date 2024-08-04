@@ -11,41 +11,316 @@ ipak <- function(pkg){
   sapply(pkg, require, character.only = TRUE)
 }
 # usage
-packages <- c("installr", "RPostgres", "dplyr","lubridate","ggplot2","tidyr", "DBI", 
-              "readxl","readr", "pdftools", "stringr", "gtools", "emayili")
+packages <- c("installr", "RPostgres", "dplyr","lubridate",
+              "ggplot2","tidyr", "DBI", "gtsummary",
+              "readxl","readr", "pdftools", 
+              "stringr", "gtools", "emayili", "bit64")
 ipak(packages)
 
-### import from postgreslq
-source("Connect_to_PGSQL.R") # load data from postgresql, you should enter database name
-
-# Connect to postgres database
-rm(list=ls())  # remove all data
-dev.off()
-print(sessionInfo(), l=F)
-## packages
-## load packages
-ipak <- function(pkg){
-  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
-  if (length(new.pkg))
-    install.packages(new.pkg, dependencies = TRUE)
-  sapply(pkg, require, character.only = TRUE)
+### set wirking directory
+workwd <- "~/OTO/Oficial/DB/HIVcascade"
+homewd <- "/Users/oto/Documents/OTO/DB/HIVcascade"
+if(isTRUE(file.info(workwd) [1,"isdir"])){
+  setwd(workwd);dir() # dir.create is used to creatge not existing directory
+}else{
+  (isTRUE(file.info(homewd)[1,"isdir"]))
+  setwd(homewd);dir()
 }
-# usage
-packages <- c("installr", "RPostgres", "dplyr","lubridate","ggplot2","tidyr", "DBI", 
-              "readxl","readr", "pdftools", "stringr", "gtools", "emayili")
-ipak(packages)
+getwd()
 
 ### import from postgreslq
-source("D:/OTO/Data_Qdb/code/Connect_to_PGSQL.R") # load data from postgresql, you should enter database name
+source("code/Connect_to_PGSQL.R") # load data from postgresql, you should enter database name
+
 
 # Connect to postgres database in case Connect_to_PGSQL.R not working ####
 # con <- DBI::dbConnect(RPostgres::Postgres(), 
 #                       dbname = "aidshis02052024", 
 #                       host = "localhost", 
 #                       port = 5432, 
-#                       user = "oto", 
-#                       password = rstudioapi::askForSecret("dbpassword")) # "oto2213"
-
-
+#                       user = "postgres", 
+#                       password = rstudioapi::askForSecret("dbpassword")) # "ototata"
 
 ##
+### create final date variable#
+frdt <- '2023-01-01'
+repyear <- '2023-12-31'
+labrt <- '2023-12-31'
+
+## dada
+glimpse(visit)
+glimpse(patient)
+
+## anonimous remove
+anonims <- read.csv("data/anonimous.csv", header=T)
+anons <- as.data.frame(unique(anonims$id))
+names(anons) <- "id"
+length(anons$id)
+
+### detect last visit
+vlst <- visit %>% 
+  arrange(vdate, vstatus) %>% 
+  #  filter(vdate <= maxvdate) %>%
+  group_by(id) %>% 
+  summarize(lastvdate = max(vdate), visstt = last(vstatus)) 
+glimpse(vlst)
+
+write.csv(vlst,  paste0(getwd(), "/data/vlst", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
+
+# filter, registrarion year before 2023 and exclude anonimous and left coutries##
+hivdb <- patient %>%  
+  left_join(vlst, by = c("regnum" = "id")) %>%
+  anti_join(anonims, by = c("regnum" = "id")) %>% # mutate(vdt = year(lst), ddt = year(deathfixdate))
+  mutate(sex = ifelse(genderid == 4, "M", "F"), 
+         rgy = year(regdate),
+         dob = year(birthdate),
+         age = as.duration(interval(birthdate,repyear)) %/% as.duration(years(1)),
+         deathy = year(deathdate),
+         trroute = case_when(transferid == '47' ~ "IDU", 
+                             transferid == '48' & sex == "M" ~ "MHETERO",
+                             transferid == '48' & sex == "F" ~ "FHETERO",
+                             transferid == '49' ~ "MSM", 
+                             transferid %in% c('50', '51', '52') ~ "OTHER",
+                             is.na(transferid) ~ "OTHER"),
+         agrgsex = case_when(age < 15 ~ "<15",
+                             age >= 15 & sex == "M" ~ "M15+",
+                             age >= 15 & sex == "F" ~ "F15+"),
+         agect = cut(age, c(-1,14,24,1000), c("0-14","15-24", "25+"))) %>%
+  filter(!is.na(regnum), rgy <= repyear, (is.na(deathy) | deathy >repyear), (is.na(visstt) | visstt != 255)) %>% # (!is.na(visstt) |
+  select(c(regnum,  lastvdate, visstt, deathy, regdate, age, agrgsex, sex, agect, rgy, arvdate, trroute))
+names(hivdb)
+glimpse(hivdb)
+
+cascadeall <- hivdb %>%  count(agrgsex) ## 88,91
+names(cascadeall)
+glimpse(cascadeall)
+
+### viral loads ###
+vll <- dball %>% filter(vid == 151) %>% 
+  arrange(labdate) %>%
+  mutate(ry = year(labdate)) %>%
+  mutate(undvl1000 = ifelse(rslt < 1000, "Und1000", "NonUndVL"), 
+         undvl200 = ifelse(rslt < 200, "Und200", "NonUndVL"),
+         vlall = ifelse(!is.na(rslt),"vldn", "not")) %>%
+  filter(labdate >= frdt , labdate <= labrt) %>%
+  group_by(id) %>%
+  summarise(vlrlat = last(rslt), vdt = max(labdate), vldund1000 = last(undvl1000), 
+            vldund200 = last(undvl200), lvvl = last(vlall))
+vll
+
+### plot by hiv transmision routes
+hivdb %>% count(rgy, trroute) %>% 
+  filter(rgy > 2010, trroute != "OTHER") %>% 
+  ggplot(aes(x = rgy, y = n, color = trroute)) + 
+  geom_line(lwd = 3)+
+  scale_x_continuous("Years", labels = as.character(hivdb$rgy), breaks = hivdb$rgy)+
+  scale_y_continuous("Count", limits = c(0, 300), breaks = seq(0,300,50))+
+  #xlim(min(db$ry), max(db$ry), by = 1)+
+  theme_bw() +
+  labs(color = "Transmission route" )+
+  # scale_fill_manual()+
+  theme(axis.text.x = element_text(angle = 90, colour = "black", size = 10), 
+        axis.text.y = element_text(colour = "black", size = 10),
+        strip.text.x = element_text(colour = "black", size = 10),
+        legend.title = element_text(size = 20), #, face = "bold"
+        title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        axis.title.x = element_text(size = 15,  face = "bold"),
+        axis.title.y = element_text(size = 15,  face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+  ) 
+
+### Late diagnosis CD4<350 or CD4<200 ##
+latediangosis <- hivdb %>% 
+  inner_join(dball, by = c("regnum"="id")) %>%
+  mutate(ry = year(regdate), cd4y = year(labdate)) %>%
+  filter(vid == 157, !is.na(rslt)) %>%
+  arrange(regnum, regdate, labdate, rslt) %>%
+  group_by(regnum) %>%
+  summarise(cd4fst = first(rslt), cd4fbtd = min(labdate), lsex = first(sex), 
+            lregdate = min(regdate), lage = min(age), ry = last(ry), trt = last(trroute)) %>%
+  mutate(
+         lry = year(lregdate),
+         lcd4y = year(cd4fbtd), 
+         agrgsex = case_when(lage < 15 ~ "<15",
+                             lage > 15 & lsex == "M" ~ "M15+",
+                             lage > 15 & lsex == "F" ~ "F15+"),
+         cd4200 =  ifelse(cd4fst < 200, "<200", "200+"),
+         cd4350 =  ifelse(cd4fst < 350, "<350", "350+")
+  ) %>%
+  select(regnum, lry, lcd4y, lsex, lage, agrgsex, cd4fst, cd4200, cd4350, trt)
+
+#write.csv(latediangosis,  paste0(getwd(), "/data/cd4results", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
+
+## write plot into file
+latediangosisn <- latediangosis %>% 
+  filter(lry > 2004) %>% #, , trt == "IDU"
+  group_by(lry) %>% 
+  count(cd4200) %>% 
+  group_by(lry) %>% 
+  mutate(per = n / sum(n) * 100)
+
+
+latediangosisn %>% ggplot(aes(x= lry, y = per, col = as.factor(cd4200))) + 
+                          geom_line(position = "jitter", lwd = 2) +
+  scale_x_continuous("Year", labels = as.character(latediangosisn$lry), 
+                     breaks = latediangosisn$lry)+
+  scale_y_continuous("Percent", limits = c(0, 100), breaks = seq(0,100,10))+
+                          theme_bw() +
+  labs(color = "CD4") +
+  scale_color_manual(values = c(2:6)) +
+  theme(axis.text.x = element_text(angle = 90, colour = "black", size = 10), 
+        axis.text.y = element_text(colour = "black", size = 10),
+        strip.text.x = element_text(colour = "black", size = 10),
+        legend.title = element_text(size = 20), #, face = "bold"
+        title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        axis.title.x = element_text(size = 15,  face = "bold"),
+        axis.title.y = element_text(size = 15,  face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+  ) 
+
+## stats late diagnosis
+table(latediangosis$lry, latediangosis$cd4200) 
+table(latediangosis$lry, latediangosis$cd4350) 
+
+### difference between HIV diagnosis date and ART start date
+arvdiffs <- hivdb %>% 
+    mutate(arvdiffdays = as.duration(interval(regdate, arvdate)) %/% as.duration(days(1)),
+           ary = year(arvdate)) %>% 
+  filter(is.na(deathy), regdate > '2018-01-01', !(trroute %in% c("OTHER")), 
+         arvdiffdays >= 0) %>% 
+  group_by(rgy, trroute) %>% 
+  summarise(arvdfd = median(arvdiffdays)) %>% 
+  ungroup()
+  
+arvdiffs %>% 
+  ggplot(aes(x = rgy, y = arvdfd, color = trroute)) + 
+  geom_line(lwd = 2) +
+  scale_x_continuous("Year", labels = as.character(latediangosisn$lry), 
+                     breaks = latediangosisn$lry)+
+  scale_y_continuous("Median (days)")+
+  theme_bw() +
+  labs(color = "Transmission") +
+  scale_color_manual(values = c(2:6)) +
+  theme(axis.text.x = element_text(angle = 90, colour = "black", size = 10), 
+        axis.text.y = element_text(colour = "black", size = 10),
+        strip.text.x = element_text(colour = "black", size = 10),
+        legend.title = element_text(size = 20), #, face = "bold"
+        title = element_text(size = 20),
+        legend.text = element_text(size = 20),
+        axis.title.x = element_text(size = 15,  face = "bold"),
+        axis.title.y = element_text(size = 15,  face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()
+  ) 
+
+##### import art ###
+art <- read_excel("data/art2023.xlsx", sheet = "art2023") %>% 
+  mutate(art2023d = paste0("y"), id = as.integer64(id))
+glimpse(art)
+
+artn <-dbarv %>% 
+  filter(arvgdate >= '2023-12-01', arvgdate <= '2023-12-31', !is.na(id),
+         !(arvst %in% c(268, 302, 354, 357, 364, 539, 598, 626, 627))) %>% 
+  mutate(arv23 = paste0("y")) %>% 
+  arrange(id) %>% 
+  select(id, arv23) %>%   unique() 
+
+setdiff(art$id, artn$id)
+##### in care ###
+cascade2024 <- hivdb %>% 
+  left_join(vll, by = c("regnum" = "id")) %>% # 
+ # mutate(id = as.numeric(regnum)) %>% 
+  left_join(artn, by =  c("regnum" = "id")) %>%  # arv patient data
+  mutate(vstcare = ifelse(is.na(lastvdate), "NotIncare", "Incare"), 
+         onart = ifelse(is.na(arv23), "NotART", "ART"),
+         VlonDone = ifelse(is.na(lvvl), "NonVL", "VLDone"))
+glimpse(cascade2024)
+names(cascade2024)
+
+write.csv(cascade2024, paste(getwd(), "/data/cascade2024v", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
+
+# arte <- cascade20 %>% filter(arv2020 == "y")
+# artdf <-setdiff(art$id, arte$regnum)
+# setequal(artdf, patients$id)
+# vislftcntr$id[vislftcntr$id == 5080]
+# 
+##  data analisis # 
+
+## 
+csc2024all <- cascade2024 %>% ### gender and agegrp and occupation
+  select(-regnum, -lastvdate, -visstt, -deathy, - regdate, -age, -rgy, -arvdate,
+         -vlrlat, -vdt, -lvvl, -arv23) %>% 
+  #select(trroute, sex,  agect, VlonArt, vl) %>%
+  tbl_summary(#by =,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p} %)"
+    ),
+    #label = q2 ~ "ასაკ. ჯგ.",
+    missing_text = "Unk.")
+as_flex_table(csc2024all)
+
+csc2024incare <- cascade2024 %>% ### gender and agegrp and occupation
+  select(vstcare, trroute, sex,  agect, onart) %>%
+  tbl_summary(by =vstcare,
+              # statistic = list(
+              #   all_continuous() ~ "{mean} ({sd})",
+              #   all_categorical() ~ "{n} ({p} %)"
+              # ),
+              #label = q2 ~ "ასაკ. ჯგ.",
+              missing_text = "Unk.")
+as_flex_table(csc2024incare)
+
+
+csc2024arv <- cascade2024 %>% ### gender and agegrp and occupation
+  select(onart, sex, trroute, agect) %>%
+  tbl_summary(by = onart,
+              percent = "row",
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd})",
+                all_categorical() ~ "{n} ({p} %)"
+              ),
+              #label = q2 ~ "ასაკ. ჯგ.",
+              missing_text = "Unk.")
+as_flex_table(csc2024arv)
+
+
+csc2024artvl <- cascade2024 %>% ### gender and agegrp and occupation
+  select(VlonArt, sex, trroute, agect) %>%
+  tbl_summary(by = VlonArt,
+              percent = "row",
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd})",
+                all_categorical() ~ "{n} ({p} %)"
+              ),
+              #label = q2 ~ "ასაკ. ჯგ.",
+              missing_text = "Unk.")
+as_flex_table(csc2024artvl)
+
+csc2024vl1000 <- cascade2024 %>% ### gender and agegrp and occupation
+  select(vldund1000, sex, trroute, agect) %>%
+  tbl_summary(by = vldund1000,
+              percent = "row",
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd})",
+                all_categorical() ~ "{n} ({p} %)"
+              ),
+              #label = q2 ~ "ასაკ. ჯგ.",
+              missing_text = "Unk.")
+as_flex_table(csc2024vl1000)
+
+
+csc2024vl200 <- cascade2024 %>% ### gender and agegrp and occupation
+  select(vldund200, sex, trroute, agect) %>%
+  tbl_summary(by = vldund200,
+              percent = "row",
+              statistic = list(
+                all_continuous() ~ "{mean} ({sd})",
+                all_categorical() ~ "{n} ({p} %)"
+              ),
+              #label = q2 ~ "ასაკ. ჯგ.",
+              missing_text = "Unk.")
+as_flex_table(csc2024vl200)
