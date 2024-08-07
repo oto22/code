@@ -98,7 +98,8 @@ codes<-dbGetQuery(con, "select * from code;", na.strings = c("", "NA"))
 regions<-dbGetQuery(con, "select * from region;", na.strings = c("", "NA"))
 ## vaccinscreening
 visitscreening <-dbGetQuery(con, "select * from visitscreening;", na.strings = c("", "NA"))
-
+## personell
+personells <-dbGetQuery(con, "select * from personell;", na.strings = c("", "NA"))
 
 dbDisconnect(con)  # close connection to posgreslq
 # status <- if(exists(c("patient","visit","dball","dbarv","scrvacc"))){print("DLS:(patient,visit , dball,dbarv,scrvacc - are ready!!!)")}

@@ -12,8 +12,8 @@ ipak <- function(pkg){
 }
 # usage
 packages <- c("installr", "RPostgres", "dplyr","lubridate",
-              "ggplot2","tidyr", "DBI", "gtsummary",
-              "readxl","readr", "pdftools", 
+              "ggplot2","tidyr", "DBI", "gtsummary", "openxlsx",
+              "readxl","readr", "pdftools", "janitor",
               "stringr", "gtools", "emayili", "bit64")
 ipak(packages)
 
@@ -63,13 +63,20 @@ vlst <- visit %>%
   group_by(id) %>% 
   summarize(lastvdate = max(vdate), visstt = last(vstatus)) 
 glimpse(vlst)
-
+## save in csv
 write.csv(vlst,  paste0(getwd(), "/data/vlst", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
+
+## prepare personells database for connection 
+prsns <- personells %>% 
+  select(personellid, fname, lname) %>% 
+  unite(doctorname, fname:lname, sep = " ")
+
 
 # filter, registrarion year before 2023 and exclude anonimous and left coutries##
 hivdb <- patient %>%  
   left_join(vlst, by = c("regnum" = "id")) %>%
   anti_join(anonims, by = c("regnum" = "id")) %>% # mutate(vdt = year(lst), ddt = year(deathfixdate))
+  left_join(prsns, by = c("doctorid" = "personellid")) %>% ## connect to personell db
   mutate(sex = ifelse(genderid == 4, "M", "F"), 
          rgy = year(regdate),
          dob = year(birthdate),
@@ -86,13 +93,32 @@ hivdb <- patient %>%
                              age >= 15 & sex == "F" ~ "F15+"),
          agect = cut(age, c(-1,14,24,1000), c("0-14","15-24", "25+"))) %>%
   filter(!is.na(regnum), rgy <= repyear, (is.na(deathy) | deathy >repyear), (is.na(visstt) | visstt != 255)) %>% # (!is.na(visstt) |
-  select(c(regnum,  lastvdate, visstt, deathy, regdate, age, agrgsex, sex, agect, rgy, arvdate, trroute))
+  add_count(doctorname, name = "doctncount") %>% 
+  add_tally(name = "totaln") %>% 
+  mutate( prcntdctnm = round(doctncount/totaln * 100, 2)) %>% 
+  select(c(regnum, lastvdate, visstt, deathy, regdate, age, agrgsex, sex, agect, rgy, arvdate, trroute, doctorname, doctncount, totaln, prcntdctnm))
 names(hivdb)
 glimpse(hivdb)
 
-cascadeall <- hivdb %>%  count(agrgsex) ## 88,91
-names(cascadeall)
-glimpse(cascadeall)
+## patients by dotctors after cleaning
+doctors <- hivdb %>%  
+  count(doctorname) %>% 
+  arrange(desc(n)) 
+
+doctors
+
+
+## select doctors with <1% of patients from total
+noflwpdoct <- hivdb %>% 
+  filter(prcntdctnm < 1) %>% 
+  select(regnum, doctorname)
+
+## selected list of patients with less then 1% from total
+noflwpdoct
+
+## write small number of patient to check by doctors.
+write.xlsx(noflwpdoct,  paste0(getwd(), "/data/noflwpdoct", Sys.Date(), ".xlsx", sep = ""), rowNames=F, na="")
+
 
 ### viral loads ###
 vll <- dball %>% filter(vid == 151) %>% 
@@ -189,7 +215,7 @@ table(latediangosis$lry, latediangosis$cd4350)
 arvdiffs <- hivdb %>% 
     mutate(arvdiffdays = as.duration(interval(regdate, arvdate)) %/% as.duration(days(1)),
            ary = year(arvdate)) %>% 
-  filter(is.na(deathy), regdate > '2018-01-01', !(trroute %in% c("OTHER")), 
+  filter(is.na(deathy), regdate > '2015-01-01', !(trroute %in% c("OTHER")), 
          arvdiffdays >= 0) %>% 
   group_by(rgy, trroute) %>% 
   summarise(arvdfd = median(arvdiffdays)) %>% 
@@ -229,28 +255,27 @@ artn <-dbarv %>%
   select(id, arv23) %>%   unique() 
 
 setdiff(art$id, artn$id)
-##### in care ###
-cascade2024 <- hivdb %>% 
+
+##### cascade coding ###
+cascadedb <- hivdb %>% 
   left_join(vll, by = c("regnum" = "id")) %>% # 
  # mutate(id = as.numeric(regnum)) %>% 
   left_join(artn, by =  c("regnum" = "id")) %>%  # arv patient data
   mutate(vstcare = ifelse(is.na(lastvdate), "NotIncare", "Incare"), 
          onart = ifelse(is.na(arv23), "NotART", "ART"),
          VlonDone = ifelse(is.na(lvvl), "NonVL", "VLDone"))
-glimpse(cascade2024)
-names(cascade2024)
+glimpse(cascadedb)
+names(cascadedb)
 
-write.csv(cascade2024, paste(getwd(), "/data/cascade2024v", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
+write.csv(cascadedb, paste(getwd(), "/data/cascadedb", Sys.Date(), ".csv", sep = ""), row.names=F, na="")
 
 # arte <- cascade20 %>% filter(arv2020 == "y")
 # artdf <-setdiff(art$id, arte$regnum)
 # setequal(artdf, patients$id)
 # vislftcntr$id[vislftcntr$id == 5080]
 # 
-##  data analisis # 
-
-## 
-csc2024all <- cascade2024 %>% ### gender and agegrp and occupation
+##  data analisis all # 
+cscall <- cascadedb %>% ### gender and agegrp and occupation
   select(-regnum, -lastvdate, -visstt, -deathy, - regdate, -age, -rgy, -arvdate,
          -vlrlat, -vdt, -lvvl, -arv23) %>% 
   #select(trroute, sex,  agect, VlonArt, vl) %>%
@@ -261,9 +286,10 @@ csc2024all <- cascade2024 %>% ### gender and agegrp and occupation
     ),
     #label = q2 ~ "ასაკ. ჯგ.",
     missing_text = "Unk.")
-as_flex_table(csc2024all)
+as_flex_table(cscall)
 
-csc2024incare <- cascade2024 %>% ### gender and agegrp and occupation
+# incare 
+cscincare <- cascadedb %>% ### gender and agegrp and occupation
   select(vstcare, trroute, sex,  agect, onart) %>%
   tbl_summary(by =vstcare,
               # statistic = list(
@@ -272,10 +298,10 @@ csc2024incare <- cascade2024 %>% ### gender and agegrp and occupation
               # ),
               #label = q2 ~ "ასაკ. ჯგ.",
               missing_text = "Unk.")
-as_flex_table(csc2024incare)
+as_flex_table(cscincare)
 
-
-csc2024arv <- cascade2024 %>% ### gender and agegrp and occupation
+## cascade on ART
+cscarv <- cascadedb %>% ### gender and agegrp and occupation
   select(onart, sex, trroute, agect) %>%
   tbl_summary(by = onart,
               percent = "row",
@@ -285,12 +311,12 @@ csc2024arv <- cascade2024 %>% ### gender and agegrp and occupation
               ),
               #label = q2 ~ "ასაკ. ჯგ.",
               missing_text = "Unk.")
-as_flex_table(csc2024arv)
+as_flex_table(cscarv)
 
-
-csc2024artvl <- cascade2024 %>% ### gender and agegrp and occupation
-  select(VlonArt, sex, trroute, agect) %>%
-  tbl_summary(by = VlonArt,
+## cascade done
+cscvldone <- cascadedb %>% ### gender and agegrp and occupation
+  select(VlonDone, sex, trroute, agect) %>%
+  tbl_summary(by = VlonDone,
               percent = "row",
               statistic = list(
                 all_continuous() ~ "{mean} ({sd})",
@@ -298,9 +324,10 @@ csc2024artvl <- cascade2024 %>% ### gender and agegrp and occupation
               ),
               #label = q2 ~ "ასაკ. ჯგ.",
               missing_text = "Unk.")
-as_flex_table(csc2024artvl)
+as_flex_table(cscvldone)
 
-csc2024vl1000 <- cascade2024 %>% ### gender and agegrp and occupation
+## cascqade vl under 1000
+cscvl1000 <- cascadedb %>% ### gender and agegrp and occupation
   select(vldund1000, sex, trroute, agect) %>%
   tbl_summary(by = vldund1000,
               percent = "row",
@@ -310,10 +337,10 @@ csc2024vl1000 <- cascade2024 %>% ### gender and agegrp and occupation
               ),
               #label = q2 ~ "ასაკ. ჯგ.",
               missing_text = "Unk.")
-as_flex_table(csc2024vl1000)
+as_flex_table(cscvl1000)
 
-
-csc2024vl200 <- cascade2024 %>% ### gender and agegrp and occupation
+## cascqade vl under 200
+cscvl200 <- cascadedb %>% ### gender and agegrp and occupation
   select(vldund200, sex, trroute, agect) %>%
   tbl_summary(by = vldund200,
               percent = "row",
@@ -323,4 +350,4 @@ csc2024vl200 <- cascade2024 %>% ### gender and agegrp and occupation
               ),
               #label = q2 ~ "ასაკ. ჯგ.",
               missing_text = "Unk.")
-as_flex_table(csc2024vl200)
+as_flex_table(cscvl200)
