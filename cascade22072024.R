@@ -290,7 +290,7 @@ as_flex_table(cscall)
 
 # incare 
 cscincare <- cascadedb %>% ### gender and agegrp and occupation
-  select(vstcare, trroute, sex,  agect, onart) %>%
+  select(vstcare, trroute, sex,  agect, onart, VlonDone, vldund1000, vldund200) %>%
   tbl_summary(by =vstcare,
               # statistic = list(
               #   all_continuous() ~ "{mean} ({sd})",
@@ -315,9 +315,9 @@ as_flex_table(cscarv)
 
 ## cascade done
 cscvldone <- cascadedb %>% ### gender and agegrp and occupation
-  select(VlonDone, sex, trroute, agect) %>%
+  select(VlonDone, sex, trroute, agect, vldund1000, vldund200, onart) %>%
   tbl_summary(by = VlonDone,
-              percent = "row",
+              percent = "column",
               statistic = list(
                 all_continuous() ~ "{mean} ({sd})",
                 all_categorical() ~ "{n} ({p} %)"
