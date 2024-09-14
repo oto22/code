@@ -31,7 +31,6 @@ getwd()
 ### import from postgreslq
 source("code/Connect_to_PGSQL.R") # load data from postgresql, you should enter database name
 
-
 # Connect to postgres database in case Connect_to_PGSQL.R not working ####
 # con <- DBI::dbConnect(RPostgres::Postgres(), 
 #                       dbname = "aidshis02052024", 
